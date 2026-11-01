@@ -1,0 +1,54 @@
+name: Run Telegram bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "5 */6 * * *"   # a new run every 6 hours
+
+# Only one bot instance at a time (two instances polling = Telegram error 409)
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355   # GitHub hard limit per job is 6 hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Keeps the SQLite database between runs (best effort, see README)
+      - uses: actions/cache@v4
+        with:
+          path: data
+          key: bot-data-${{ github.run_id }}
+          restore-keys: |
+            bot-data-
+
+      - name: Run bot (restarts after a crash until ~5h45m)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          end=$((SECONDS + 20700))
+          while [ "$SECONDS" -lt "$end" ]; do
+            remaining=$((end - SECONDS))
+            timeout "${remaining}s" python bot.py && rc=0 || rc=$?
+            if [ "$rc" -eq 2 ]; then
+              echo "Configuration error - check your GitHub Secrets"
+              exit 2
+            fi
+            sleep 10
+          done
